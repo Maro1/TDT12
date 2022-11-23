@@ -7,8 +7,10 @@ import pickle
 import json
 import random
 
+import numpy as np
 
-JSON_FILE = "maestro-v2.0.0.json"
+
+JSON_FILE = "maestro-v3.0.0.json"
 
 RANGE_NOTE_ON = 128
 RANGE_NOTE_OFF = 128
@@ -115,19 +117,24 @@ def _merge_note(snote_sequence):
     note_on_dict = {}
     result_array = []
 
+    print('NOTE_SEQ: ', snote_sequence)
+
     for snote in snote_sequence:
-        # print(note_on_dict)
+        print('NOTE_DICT: ', note_on_dict)
         if snote.type == 'note_on':
             note_on_dict[snote.value] = snote
         elif snote.type == 'note_off':
             try:
                 on = note_on_dict[snote.value]
+                print('ON: ', on)
                 off = snote
                 if off.time - on.time == 0:
                     continue
+                print('HERE')
                 result = pretty_midi.Note(on.velocity, snote.value, on.time, off.time)
                 result_array.append(result)
-            except:
+            except Exception as e:
+                print('EX: ', e)
                 print('info removed pitch: {}'.format(snote.value))
     return result_array
 
@@ -198,7 +205,6 @@ def _note_preprocess(susteins, notes):
             elif note.start > sustain.end:
                 notes = notes[note_idx:]
                 sustain.transposition_notes()
-                break
             else:
                 sustain.add_managed_note(note)
 
@@ -219,7 +225,11 @@ def encode_midi(file_path):
         # ctrl.number is the number of sustain control. If you want to know abour the number type of control,
         # see https://www.midi.org/specifications-old/item/table-3-control-change-messages-data-bytes-2
         ctrls = _control_preprocess([ctrl for ctrl in inst.control_changes if ctrl.number == 64])
-        notes += _note_preprocess(ctrls, inst_notes)
+        notes = inst_notes
+        notes.sort(key= lambda x: x.start)
+
+    if len(notes) == 0:
+        return []
 
     dnotes = _divide_note(notes)
 
@@ -242,7 +252,6 @@ def encode_midi(file_path):
 
 def decode_midi(idx_array, file_path=None):
     event_sequence = [Event.from_int(idx) for idx in idx_array]
-    # print(event_sequence)
     snote_seq = _event_seq2snote_seq(event_sequence)
     note_seq = _merge_note(snote_seq)
     note_seq.sort(key=lambda x:x.start)
@@ -283,7 +292,7 @@ def prep_maestro_midi(maestro_root, output_dir):
         return False
 
     maestro_json = json.load(open(maestro_json_file, "r"))
-    print("Found", len(maestro_json), "pieces")
+    print("Found", len(maestro_json['midi_filename']), "pieces")
     print("Preprocessing...")
 
     total_count = 0
@@ -291,9 +300,9 @@ def prep_maestro_midi(maestro_root, output_dir):
     val_count   = 0
     test_count  = 0
 
-    for piece in maestro_json:
-        mid         = os.path.join(maestro_root, piece["midi_filename"])
-        split_type  = piece["split"]
+    for i in range(len(maestro_json['midi_filename'])):
+        mid         = os.path.join(maestro_root, maestro_json["midi_filename"][str(i)])
+        split_type  = maestro_json["split"][str(i)]
         f_name      = mid.split("/")[-1] + ".pickle"
 
         if(split_type == "train"):
@@ -324,7 +333,73 @@ def prep_maestro_midi(maestro_root, output_dir):
     print("Num Test:", test_count)
     return True
 
+def prep_giant_midi(giant_root, output_dir):
+    """
+    ----------
+    Author: Damon Gwinn
+    ----------
+    Pre-processes the maestro dataset, putting processed midi data (train, eval, test) into the
+    given output folder
+    ----------
+    """
 
+    train_dir = os.path.join(output_dir, "train")
+    os.makedirs(train_dir, exist_ok=True)
+    val_dir = os.path.join(output_dir, "val")
+    os.makedirs(val_dir, exist_ok=True)
+    test_dir = os.path.join(output_dir, "test")
+    os.makedirs(test_dir, exist_ok=True)
+
+    files = os.listdir(giant_root)
+    random.shuffle(files)
+    num_files = len(files)
+    train, val, test = np.split(files, [int(len(files)*0.8), int(len(files)*0.9)])
+    files = {'train': train, 'val': val, 'test': test}
+
+    print("Found", num_files, "pieces")
+    print("Preprocessing...")
+
+    total_count = 0
+    train_count = 0
+    val_count   = 0
+    test_count  = 0
+
+    for split_type in files.keys():
+        for filename in files[split_type]:
+            mid         = os.path.join(giant_root, filename)
+            f_name      = mid.split("/")[-1] + ".pickle"
+
+            if(split_type == "train"):
+                o_file = os.path.join(train_dir, f_name)
+                train_count += 1
+            elif(split_type == "val"):
+                o_file = os.path.join(val_dir, f_name)
+                val_count += 1
+            elif(split_type == "test"):
+                o_file = os.path.join(test_dir, f_name)
+                test_count += 1
+            else:
+                print("ERROR: Unrecognized split type:", split_type)
+                return False
+
+            try:
+                prepped = encode_midi(mid)
+            except Exception as e:
+                print(e)
+                continue
+
+            o_stream = open(o_file, "wb")
+            pickle.dump(prepped, o_stream)
+            o_stream.close()
+
+            total_count += 1
+            if(total_count % 50 == 0):
+                print(total_count, "/", num_files)
+
+    print("Num Train:", train_count)
+    print("Num Val:", val_count)
+    print("Num Test:", test_count)
+    return True
 
 
 # prep_midi
@@ -348,7 +423,12 @@ def prep_general_midi(data_root, output_dir):
         o_file = os.path.join(train_dir, f_name)
         train_count += 1
 
-        prepped = encode_midi(mid)
+        try:
+            prepped = encode_midi(mid)
+            if len(prepped) == 0:
+                continue
+        except Exception as e:
+            continue
 
         o_stream = open(o_file, "wb")
         pickle.dump(prepped, o_stream)
@@ -374,7 +454,7 @@ def parse_args():
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-self_dataset", type=bool, default=True, help="If use the self dataset.")
+    parser.add_argument("-dataset", type=int, default=True, help="Which dataset to use. (1: MAESTRO, 2: Giant-MIDI, 3: ADL)")
     parser.add_argument("-root", type=str, default='./data/hymnal', help="Root folder for the Maestro dataset or for custom data.")
     parser.add_argument("-output_dir", type=str, default="./data", help="Output folder to put the preprocessed midi into.")
     
@@ -393,14 +473,19 @@ def main():
     args            = parse_args()
     root            = args.root
     output_dir      = args.output_dir 
-    self_data_flag  = args.self_dataset
+    dataset = args.dataset
 
     print("Preprocessing midi files and saving to", output_dir)
     
-    if self_data_flag == False:
+    if dataset == 1:
         prep_maestro_midi(root, output_dir) 
+    elif dataset == 2:
+        prep_giant_midi(root, output_dir) 
+    elif dataset == 3:
+        prep_giant_midi(root, output_dir)
     else:
-        prep_general_midi(root, output_dir)
+        print('ERROR: Unknown dataset')
+        return
     print("Done!")
     print("")
 

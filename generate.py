@@ -6,11 +6,10 @@ import numpy as np
 import torch.nn.functional as F 
 
 from perceiver_ar_pytorch import PerceiverAR 
-from dataset import create_epiano_datasets 
+from dataset import EPianoDataset 
 from preprocess import decode_midi 
 from utils import *
 from tqdm import tqdm 
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
 
@@ -31,11 +30,11 @@ def greedy_decode(condi, model, args):
 
 
 
-def sample_sequence(condi, model, args, temperature=0.7, top_k=0, top_p=0.9): 
+def sample_sequence(condi, model, args, temperature=0.85, top_k=0, top_p=0.9): 
     ys = [] 
-    for i in range(args.max_sequence): 
+    for i in range(args.max_sequence - condi.size(dim=1)): 
         if i > 0: 
-            predict = torch.tensor(ys).long().unsqueeze(0) 
+            predict = torch.tensor(ys).long().unsqueeze(0).to(device) 
             input = torch.cat((condi, predict), dim=-1) 
         else: 
             input = condi 
@@ -52,8 +51,6 @@ def sample_sequence(condi, model, args, temperature=0.7, top_k=0, top_p=0.9):
             if max_iter > 100: 
                 next_token = TOKEN_END - 1 
         ys.append(next_token) 
-        if len(ys) > 100:
-            break
         
     return ys 
 
@@ -114,7 +111,7 @@ def main():
     parser.add_argument("-decode_method", type=str, default="sample", help="greedy, sample, beam search")
     args = parser.parse_args() 
 
-    train_dataset, val_dataset, test_dataset = create_epiano_datasets(args.data_dir, args.max_sequence) 
+    test_dataset = EPianoDataset(args.data_dir, args.max_sequence, True) 
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, num_workers=args.n_workers) 
 
     model = PerceiverAR(
@@ -137,16 +134,24 @@ def main():
                 x = batch[0].to(device) 
                 tgt = batch[1].to(device) 
                 condi = x[:, :1025] 
+
                 if args.decode_method == 'greedy': 
                     predict = greedy_decode(condi, model, args) 
                 elif args.decode_method == 'sample':
                     predict = sample_sequence(condi, model, args) 
+
                 
                 predict = np.array(predict) 
+                condi = condi.cpu().detach().numpy()[0]
+
                 midi_name = 'sample_' + str(batch_num) + '.mid' 
                 midi_path = os.path.join(args.output_dir, midi_name)
                 decode_midi(predict, file_path=midi_path) 
-                break
+
+                midi_name = 'condi_' + str(batch_num) + '.mid' 
+                midi_path = os.path.join(args.output_dir, midi_name)
+                decode_midi(condi, file_path=midi_path) 
+
 
 
 if __name__ == "__main__":

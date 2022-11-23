@@ -1,4 +1,5 @@
 import os 
+import csv
 import torch 
 import torch.nn as nn 
 from torch.optim.lr_scheduler import LambdaLR 
@@ -6,6 +7,7 @@ from torch.utils.data import DataLoader
 from torch.optim import Adam 
 import argparse
 from tqdm import tqdm 
+from matplotlib import pyplot as plt
 
 from preprocess import decode_midi 
 from dataset import create_epiano_datasets 
@@ -14,6 +16,39 @@ from utils import *
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu") 
+
+train_acc = []
+val_acc = []
+train_loss = []
+val_loss = []
+
+def plot_results(out_dir):
+    plt.plot(train_acc)
+    plt.plot(val_acc)
+    plt.title('model accuracy')
+    plt.ylabel('accuracy')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'val'], loc='upper left')
+    plt.savefig(os.path.join(out_dir, 'accuracy.png'))
+
+    plt.clf()
+    
+    plt.plot(train_loss)
+    plt.plot(val_loss)
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'val'], loc='upper left')
+    plt.savefig(os.path.join(out_dir, 'loss.png'))
+
+def save_results(out_dir):
+    results = {'train_loss': train_loss, 'val_loss': val_loss, 'train_acc': train_acc, 'val_acc': val_acc}
+    with open(os.path.join(out_dir, 'results.csv'), 'w+') as csv_file:
+        writer = csv.writer(csv_file)
+        for key, value in results.items():
+           writer.writerow([key, value])
+    plot_results(out_dir)
+
 
 def train(cur_epoch, model, data_loader, opt, lr_scheduler=None): 
     model.train() 
@@ -26,6 +61,7 @@ def train(cur_epoch, model, data_loader, opt, lr_scheduler=None):
             x   = batch[0].to(device)
             tgt = batch[1].to(device) 
             out = model(x, labels=tgt) 
+            out = (torch.nan_to_num(out[0]), torch.nan_to_num(out[1]))
             loss = out[0] 
             acc = out[1]
             loss.backward()
@@ -36,26 +72,33 @@ def train(cur_epoch, model, data_loader, opt, lr_scheduler=None):
             sum_acc += acc.item()
             t.set_description('Epoch %i' % cur_epoch)
             t.set_postfix(loss=sum_loss / (batch_num+1), acc=sum_acc/(batch_num+1))
-            break 
+
+    train_loss.append(sum_loss / (batch_num+1))
+    train_acc.append(sum_acc / (batch_num+1))
 
 
 def eval(model, data_loader): 
     model.eval() 
     sum_loss = .0 
     sum_acc = .0 
+
     with torch.no_grad(): 
         with tqdm(enumerate(data_loader), total=len(data_loader)) as t: 
             for batch_num, batch in t: 
                 x = batch[0].to(device) 
                 tgt = batch[1].to(device) 
                 out = model(x, labels=tgt) 
+                out = (torch.nan_to_num(out[0]), torch.nan_to_num(out[1]))
                 loss = out[0].item() 
                 acc = out[1].item() 
                 sum_loss += loss 
                 sum_acc += acc 
                 t.set_description('Evaluation')
                 t.set_postfix(loss=sum_loss / (batch_num+1), acc=sum_acc/(batch_num+1))
-                break 
+
+    val_loss.append(sum_loss / (batch_num+1))
+    val_acc.append(sum_acc / (batch_num+1))
+
     return sum_acc/(batch_num+1) 
 
 
@@ -121,8 +164,8 @@ def main():
                 'state_dict': model.state_dict(),
                 'optimizer': opt.state_dict(),
             }, os.path.join(args.ckpt_dir, 'latest.pth'))
-        break 
 
+    save_results(args.ckpt_dir)
 
 
 if __name__ == "__main__":
